@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0f6b4f">
+<title>Personal Finance Tracker</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script>tailwind.config={theme:{extend:{fontFamily:{sans:['"Plus Jakarta Sans"','system-ui','sans-serif']}}}}</script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
+</head>
+<body class="bg-stone-50 text-stone-900 dark:bg-zinc-950 dark:text-stone-100 antialiased font-sans">
+<div id="root"></div>
+<script>
+const {useState,useEffect,useCallback}=React;
+const html=htm.bind(React.createElement);
+const sb=supabase.createClient('https://wgxyvmszpnoqniqzisvo.supabase.co','sb_publishable_9AvOFbOZ_6gm6s6XFtCjOA_Aqgo8YiA');
+
+const rp=n=>(n<0?'-':'')+'Rp '+Math.abs(n).toLocaleString('id-ID');
+const num=s=>Number(String(s).replace(/\D/g,''))||0;
+const fmtIn=s=>{const d=String(s).replace(/\D/g,'').slice(0,13);return d?Number(d).toLocaleString('id-ID'):''};
+const today=()=>{const d=new Date();return new Date(d-d.getTimezoneOffset()*6e4).toISOString().slice(0,10)};
+const dlabel=s=>{const[y,m,d]=s.split('-');return new Date(y,m-1,d).toLocaleDateString('id-ID',{weekday:'long',day:'numeric',month:'short',year:'numeric'})};
+const TYPES={bank:'Bank',ewallet:'Dompet digital',cash:'Tunai',other:'Lainnya'};
+const LBL={type:'Jenis',amount:'Nominal',fee:'Biaya admin',occurred_on:'Tanggal',note:'Catatan',deleted_at:'Dihapus',account_id:'Akun',to_account_id:'Tujuan',category_id:'Kategori'};
+const ACT={create:'Dibuat',update:'Diubah',delete:'Dihapus',restore:'Dipulihkan'};
+
+const card='rounded-2xl bg-white dark:bg-zinc-900 border border-stone-200/70 dark:border-zinc-800';
+const inp='mt-1 w-full rounded-xl border border-stone-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-emerald-700';
+const btn='rounded-xl px-4 py-2.5 font-semibold disabled:opacity-50';
+const pri=btn+' bg-emerald-800 text-white w-full';
+const sec=btn+' bg-stone-200/70 dark:bg-zinc-800';
+
+const Field=({label,children})=>html`<label className="block"><span className="text-xs text-stone-500 dark:text-zinc-400">${label}</span>${children}</label>`;
+const Sheet=({title,onClose,children})=>html`<div className="fixed inset-0 z-40 flex items-end justify-center bg-black/40" onClick=${onClose}>
+  <div className="w-full max-w-md max-h-[92vh] overflow-y-auto rounded-t-3xl bg-stone-50 dark:bg-zinc-900 p-5 space-y-4" style=${{paddingBottom:'calc(2rem + env(safe-area-inset-bottom))'}} onClick=${e=>e.stopPropagation()}>
+    <div className="flex items-center justify-between"><h2 className="text-lg font-bold">${title}</h2><button onClick=${onClose} className="px-2 text-stone-500" aria-label="Tutup">✕</button></div>${children}</div></div>`;
+
+function Login(){
+  const[e,setE]=useState(''),[p,setP]=useState(''),[err,setErr]=useState(''),[b,setB]=useState(false);
+  const go=async()=>{setB(true);setErr('');const{error}=await sb.auth.signInWithPassword({email:e.trim(),password:p});if(error)setErr('Email atau kata sandi salah.');setB(false)};
+  return html`<form className="min-h-screen flex items-center justify-center p-6" onSubmit=${ev=>{ev.preventDefault();go()}}>
+    <div className="w-full max-w-sm space-y-4">
+      <div><h1 className="text-2xl font-bold">Personal Finance Tracker</h1><p className="text-sm text-stone-500">Masuk untuk melihat keuangan Anda.</p></div>
+      <${Field} label="Email"><input type="email" autoComplete="username" className=${inp} value=${e} onChange=${x=>setE(x.target.value)}/><//>
+      <${Field} label="Kata sandi"><input type="password" autoComplete="current-password" className=${inp} value=${p} onChange=${x=>setP(x.target.value)}/><//>
+      ${err&&html`<p className="text-sm text-red-600">${err}</p>`}
+      <button type="submit" className=${pri} disabled=${b||!e||!p}>${b?'Masuk…':'Masuk'}</button>
+    </div></form>`;
+}
+
+function AccForm({a,run,flash}){
+  const[n,setN]=useState(a?.name||''),[t,setT]=useState(a?.type||'bank'),[o,setO]=useState(a?String(a.opening_balance):''),[b,setB]=useState(false);
+  const save=async()=>{if(!n.trim())return flash('Nama akun wajib diisi');setB(true);
+    const row={name:n.trim(),type:t,opening_balance:num(o)};
+    await run(a?sb.from('accounts').update(row).eq('id',a.id):sb.from('accounts').insert(row),'Akun disimpan');setB(false)};
+  const arch=()=>{if(!a.is_archived&&a.balance!==0&&!confirm('Saldo '+rp(a.balance)+' tidak akan dihitung di total aset. Arsipkan?'))return;
+    run(sb.from('accounts').update({is_archived:!a.is_archived}).eq('id',a.id),a.is_archived?'Akun diaktifkan':'Akun diarsipkan')};
+  const del=()=>{if(confirm('Hapus permanen akun ini? Hanya bisa jika belum punya transaksi.'))run(sb.from('accounts').delete().eq('id',a.id),'Akun dihapus')};
+  return html`<div className="space-y-4">
+    <${Field} label="Nama akun"><input className=${inp} value=${n} placeholder="mis. Bank Jago" onChange=${x=>setN(x.target.value)}/><//>
+    <${Field} label="Jenis"><select className=${inp} value=${t} onChange=${x=>setT(x.target.value)}>${Object.entries(TYPES).map(([k,v])=>html`<option key=${k} value=${k}>${v}</option>`)}</select><//>
+    <${Field} label="Saldo awal (Rp)"><input inputMode="numeric" className=${inp} value=${fmtIn(o)} onChange=${x=>setO(x.target.value)}/><//>
+    ${a&&html`<p className="text-xs text-stone-500">Mengubah saldo awal ikut mengubah saldo saat ini. Untuk mencocokkan dengan saldo nyata, gunakan Sesuaikan saldo.</p>`}
+    <button className=${pri} disabled=${b} onClick=${save}>Simpan akun</button>
+    ${a&&html`<div className="flex gap-2"><button className=${sec+' flex-1'} onClick=${arch}>${a.is_archived?'Aktifkan kembali':'Arsipkan'}</button><button className=${sec+' flex-1 text-red-600'} onClick=${del}>Hapus</button></div>`}
+  </div>`;
+}
+
+function Adj({a,run}){
+  const[v,setV]=useState(''),[b,setB]=useState(false);
+  const diff=v===''?null:num(v)-a.balance;
+  return html`<div className="space-y-4">
+    <p className="text-sm text-stone-500">Saldo di aplikasi: <b className="text-stone-900 dark:text-stone-100">${rp(a.balance)}</b>. Isi saldo sebenarnya (mis. dari m-banking). Selisihnya dicatat sebagai penyesuaian, bukan pemasukan atau pengeluaran.</p>
+    <${Field} label="Saldo sebenarnya (Rp)"><input inputMode="numeric" className=${inp+' text-2xl font-semibold'} value=${fmtIn(v)} onChange=${x=>setV(x.target.value)}/><//>
+    ${diff!==null&&html`<p className="text-sm">${diff===0?'Sudah sesuai, tidak ada perubahan.':'Selisih: '+(diff>0?'+':'')+rp(diff)}</p>`}
+    <button className=${pri} disabled=${b||diff===null||diff===0} onClick=${async()=>{setB(true);await run(sb.rpc('adjust_account_balance',{p_account_id:a.id,p_actual_balance:num(v),p_date:today(),p_note:'Penyesuaian saldo'}),'Saldo disesuaikan');setB(false)}}>Simpan penyesuaian</button>
+  </div>`;
+}
+
+function TxForm({t,acc,cats,names,run,flash}){
+  const adj=t?.type==='adjustment';
+  const[ty,setTy]=useState(t?.type||'expense'),[am,setAm]=useState(t?String(Math.abs(t.amount)):''),
+    [a1,setA1]=useState(t?.account_id||acc[0]?.id||''),[a2,setA2]=useState(t?.to_account_id||''),
+    [fee,setFee]=useState(t?.fee?String(t.fee):''),[c,setC]=useState(t?.category_id||''),
+    [d,setD]=useState(t?.occurred_on||today()),[nt,setNt]=useState(t?.note||''),[b,setB]=useState(false),[h,setH]=useState(null);
+  const save=async()=>{
+    let row;
+    if(adj)row={occurred_on:d,note:nt||null};
+    else{
+      const a=num(am);
+      if(!a)return flash('Nominal harus lebih dari 0');
+      if(!a1)return flash('Pilih akun');
+      if(ty==='transfer'){if(!a2||a2===a1)return flash('Pilih akun tujuan yang berbeda dari akun asal')}
+      else if(!c)return flash('Pilih kategori');
+      row={type:ty,amount:a,account_id:a1,to_account_id:ty==='transfer'?a2:null,category_id:ty==='transfer'?null:c,fee:ty==='transfer'?num(fee):0,occurred_on:d,note:nt||null};
+    }
+    setB(true);
+    await run(t?sb.from('transactions').update(row).eq('id',t.id):sb.from('transactions').insert(row),t?'Transaksi diperbarui':'Transaksi disimpan');
+    setB(false)};
+  const del=()=>{if(confirm('Hapus transaksi ini? Saldo akun akan diperbarui, dan jejaknya tetap ada di riwayat.'))run(sb.from('transactions').update({deleted_at:new Date().toISOString()}).eq('id',t.id),'Transaksi dihapus')};
+  const hist=async()=>{if(h){setH(null);return}
+    const{data,error}=await sb.from('transaction_history').select('*').eq('transaction_id',t.id).order('changed_at',{ascending:false});
+    if(error)return flash(error.message);setH(data)};
+  const fv=(k,v)=>v==null?'-':(k==='amount'||k==='fee')?rp(v):k==='deleted_at'?'ya':names[v]||String(v);
+  const diff=r=>{if(r.action==='create')return[];const o=r.old_data||{},n=r.new_data||{};
+    return Object.keys(n).filter(k=>LBL[k]&&JSON.stringify(o[k])!==JSON.stringify(n[k])).map(k=>LBL[k]+': '+fv(k,o[k])+' → '+fv(k,n[k]))};
+  const sel=(v,f,list)=>html`<select className=${inp} value=${v} onChange=${x=>f(x.target.value)}>${list.map(x=>html`<option key=${x.id} value=${x.id}>${x.name}</option>`)}</select>`;
+  return html`<div className="space-y-4">
+    ${adj?html`<p className="text-sm text-stone-500">Penyesuaian saldo sebesar <b>${rp(t.amount)}</b>. Nominalnya tidak bisa diubah. Hapus lalu lakukan penyesuaian ulang jika keliru.</p>`:html`<div className="space-y-4">
+      <div className="grid grid-cols-3 gap-1 rounded-xl bg-stone-200/70 dark:bg-zinc-800 p-1">${[['expense','Keluar'],['income','Masuk'],['transfer','Transfer']].map(([k,l])=>html`<button key=${k} onClick=${()=>{setTy(k);setC('')}} className=${'rounded-lg py-2 text-sm font-semibold '+(ty===k?'bg-white dark:bg-zinc-950 shadow-sm':'text-stone-500')}>${l}</button>`)}</div>
+      <${Field} label="Nominal (Rp)"><input inputMode="numeric" autoFocus=${!t} className=${inp+' text-3xl font-bold'} value=${fmtIn(am)} placeholder="0" onChange=${x=>setAm(x.target.value)}/><//>
+      ${ty==='transfer'?html`<div className="space-y-4"><${Field} label="Dari akun">${sel(a1,setA1,acc)}<//>
+        <${Field} label="Ke akun"><select className=${inp} value=${a2} onChange=${x=>setA2(x.target.value)}><option value="">Pilih akun tujuan</option>${acc.filter(x=>x.id!==a1).map(x=>html`<option key=${x.id} value=${x.id}>${x.name}</option>`)}</select><//>
+        <${Field} label="Biaya admin (Rp, opsional)"><input inputMode="numeric" className=${inp} value=${fmtIn(fee)} onChange=${x=>setFee(x.target.value)}/><//></div>`
+      :html`<div className="space-y-4"><${Field} label="Akun">${sel(a1,setA1,acc)}<//>
+        <div><span className="text-xs text-stone-500 dark:text-zinc-400">Kategori</span><div className="mt-1 flex flex-wrap gap-2">${cats.filter(x=>x.kind===ty&&(!x.is_archived||x.id===c)).map(x=>html`<button key=${x.id} onClick=${()=>setC(x.id)} className=${'rounded-full border px-3 py-1.5 text-sm '+(c===x.id?'bg-emerald-800 border-emerald-800 text-white':'border-stone-300 dark:border-zinc-700')}>${x.name}</button>`)}</div></div></div>`}
+    </div>`}
+    <${Field} label="Tanggal"><input type="date" className=${inp} value=${d} onChange=${x=>setD(x.target.value)}/><//>
+    <${Field} label="Catatan (opsional)"><input className=${inp} value=${nt} onChange=${x=>setNt(x.target.value)}/><//>
+    <button className=${pri} disabled=${b} onClick=${save}>${t?'Simpan perubahan':'Simpan transaksi'}</button>
+    ${t&&html`<div className="flex gap-2"><button className=${sec+' flex-1'} onClick=${hist}>${h?'Tutup riwayat':'Riwayat perubahan'}</button><button className=${sec+' flex-1 text-red-600'} onClick=${del}>Hapus</button></div>`}
+    ${h&&html`<ul className="space-y-2 text-sm">${h.map(r=>html`<li key=${r.id} className=${card+' p-3'}><div className="font-semibold">${ACT[r.action]} <span className="font-normal text-stone-500">· ${new Date(r.changed_at).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'})}</span></div>${diff(r).map(x=>html`<div key=${x} className="text-stone-600 dark:text-zinc-400">${x}</div>`)}</li>`)}</ul>`}
+  </div>`;
+}
+
+function Main(){
+  const[acc,setAcc]=useState([]),[cats,setCats]=useState([]),[tx,setTx]=useState([]);
+  const[tab,setTab]=useState('acc'),[fa,setFa]=useState(''),[modal,setModal]=useState(null),[msg,setMsg]=useState(''),[ld,setLd]=useState(true);
+  const flash=t=>{setMsg(t);setTimeout(()=>setMsg(''),4500)};
+  const load=useCallback(async()=>{
+    const[a,c,t]=await Promise.all([
+      sb.from('account_balances').select('*').order('sort_order').order('name'),
+      sb.from('categories').select('*').order('name'),
+      sb.from('transactions').select('*').is('deleted_at',null).order('occurred_on',{ascending:false}).order('created_at',{ascending:false}).limit(500)]);
+    const er=a.error||c.error||t.error;
+    if(er)flash('Gagal memuat data: '+er.message);
+    else{setAcc(a.data);setCats(c.data);setTx(t.data)}
+    setLd(false)},[]);
+  useEffect(()=>{load()},[load]);
+  const run=async(p,ok)=>{
+    const{error}=await p;
+    if(error){flash(/foreign key/i.test(error.message)?'Akun sudah punya transaksi. Gunakan Arsipkan.':error.message);return false}
+    if(ok)flash(ok);await load();setModal(null);return true};
+  const names={};acc.forEach(a=>names[a.id]=a.name);cats.forEach(c=>names[c.id]=c.name);
+  const active=acc.filter(a=>!a.is_archived),archived=acc.filter(a=>a.is_archived);
+  const total=active.reduce((s,a)=>s+a.balance,0);
+  const openTx=t=>{
+    if(!t&&!active.length){setTab('acc');return flash('Tambahkan akun dulu di tab Akun.')}
+    setModal({k:'tx',t})};
+  const selectable=t=>{const l=[...active];[t?.account_id,t?.to_account_id].forEach(id=>{const x=acc.find(a=>a.id===id);if(x&&!l.includes(x))l.push(x)});return l};
+
+  const accRow=a=>html`<div key=${a.id} className=${card+' p-4'+(a.is_archived?' opacity-60':'')}>
+    <div className="flex items-center justify-between gap-3" onClick=${()=>{setFa(a.id);setTab('tx')}}>
+      <div className="min-w-0"><div className="font-semibold truncate">${a.name}</div><div className="text-xs text-stone-500">${TYPES[a.type]}</div></div>
+      <div className=${'font-semibold tabular-nums '+(a.balance<0?'text-red-600':'')}>${rp(a.balance)}</div></div>
+    <div className="mt-3 flex gap-2 text-sm">
+      ${!a.is_archived&&html`<button className=${sec+' !py-1.5 !px-3'} onClick=${()=>setModal({k:'adj',a})}>Sesuaikan saldo</button>`}
+      <button className=${sec+' !py-1.5 !px-3'} onClick=${()=>setModal({k:'acc',a})}>Edit</button></div></div>`;
+
+  const list=fa?tx.filter(t=>t.account_id===fa||t.to_account_id===fa):tx;
+  const groups=[];list.forEach(t=>{const g=groups[groups.length-1];g&&g.d===t.occurred_on?g.l.push(t):groups.push({d:t.occurred_on,l:[t]})});
+  const txRow=t=>{
+    const tr=t.type==='transfer',ad=t.type==='adjustment';
+    const title=tr?names[t.account_id]+' → '+names[t.to_account_id]:ad?'Penyesuaian saldo':names[t.category_id]||'-';
+    const sub=[!tr&&!ad&&names[t.account_id],tr&&t.fee>0&&'biaya admin '+rp(t.fee),t.note].filter(Boolean).join(' · ');
+    let v=t.amount,cls='text-stone-500 dark:text-zinc-400';
+    if(t.type==='income'){v=t.amount;cls='text-emerald-700 dark:text-emerald-400'}
+    else if(t.type==='expense'){v=-t.amount;cls='text-red-600 dark:text-red-400'}
+    else if(tr&&fa)v=fa===t.account_id?-(t.amount+t.fee):t.amount;
+    const s=t.type==='income'||(v>0&&(ad||(tr&&fa)))?'+':'';
+    return html`<button key=${t.id} onClick=${()=>openTx(t)} className=${card+' w-full p-3.5 flex items-center justify-between gap-3 text-left'}>
+      <div className="min-w-0"><div className="font-medium truncate">${title}</div>${sub&&html`<div className="text-xs text-stone-500 truncate">${sub}</div>`}</div>
+      <div className=${'font-semibold tabular-nums whitespace-nowrap '+cls}>${s+rp(v)}</div></button>`};
+
+  return html`<div className="max-w-md mx-auto min-h-screen px-4 pb-32" style=${{paddingTop:'calc(1rem + env(safe-area-inset-top))'}}>
+    ${msg&&html`<div className="fixed top-3 inset-x-4 z-50 mx-auto max-w-md rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 px-4 py-3 text-sm shadow-lg">${msg}</div>`}
+    ${ld?html`<p className="py-20 text-center text-stone-500">Memuat…</p>`:tab==='acc'?html`<div className="space-y-4">
+      <div className="flex items-start justify-between pt-2"><div><div className="text-sm text-stone-500">Total aset</div><div className=${'text-4xl font-bold tracking-tight tabular-nums '+(total<0?'text-red-600':'')}>${rp(total)}</div><div className="text-xs text-stone-500 mt-1">${active.length} akun aktif</div></div>
+        <button className="text-sm text-stone-500 underline" onClick=${()=>sb.auth.signOut()}>Keluar</button></div>
+      ${active.length===0&&html`<div className=${card+' p-5 text-sm text-stone-500'}>Belum ada akun. Tambahkan akun pertama Anda, mis. Bank Jago, DANA, atau Uang tunai.</div>`}
+      <div className="space-y-3">${active.map(accRow)}</div>
+      <button className=${sec+' w-full'} onClick=${()=>setModal({k:'acc',a:null})}>+ Tambah akun</button>
+      ${archived.length>0&&html`<details className="text-sm"><summary className="cursor-pointer text-stone-500">Diarsipkan (${archived.length})</summary><div className="mt-3 space-y-3">${archived.map(accRow)}</div></details>`}
+    </div>`:html`<div className="space-y-4">
+      <div className="pt-2"><h1 className="text-2xl font-bold">Transaksi</h1></div>
+      <select className=${inp} value=${fa} onChange=${e=>setFa(e.target.value)}><option value="">Semua akun</option>${acc.map(a=>html`<option key=${a.id} value=${a.id}>${a.name}</option>`)}</select>
+      ${groups.length===0&&html`<div className=${card+' p-5 text-sm text-stone-500'}>Belum ada transaksi. Ketuk tombol + di bawah untuk mencatat yang pertama.</div>`}
+      ${groups.map(g=>html`<div key=${g.d} className="space-y-2"><div className="text-xs font-semibold text-stone-500 pt-2">${dlabel(g.d)}</div>${g.l.map(txRow)}</div>`)}
+      ${tx.length>=500&&html`<p className="text-xs text-stone-500">Menampilkan 500 transaksi terbaru.</p>`}
+    </div>`}
+    <nav className="fixed bottom-0 inset-x-0 z-30 border-t border-stone-200 dark:border-zinc-800 bg-stone-50/90 dark:bg-zinc-950/90 backdrop-blur" style=${{paddingBottom:'env(safe-area-inset-bottom)'}}>
+      <div className="mx-auto max-w-md grid grid-cols-3 items-center py-2">
+        <button onClick=${()=>setTab('acc')} className=${'py-2 text-sm font-semibold '+(tab==='acc'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Akun</button>
+        <button onClick=${()=>openTx(null)} aria-label="Tambah transaksi" className="mx-auto h-14 w-14 -mt-6 rounded-full bg-emerald-800 text-white text-3xl shadow-lg">+</button>
+        <button onClick=${()=>setTab('tx')} className=${'py-2 text-sm font-semibold '+(tab==='tx'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Transaksi</button>
+      </div></nav>
+    ${modal&&html`<${Sheet} title=${modal.k==='acc'?(modal.a?'Edit akun':'Akun baru'):modal.k==='adj'?'Sesuaikan saldo':(modal.t?'Detail transaksi':'Transaksi baru')} onClose=${()=>setModal(null)}>
+      ${modal.k==='acc'?html`<${AccForm} a=${modal.a} run=${run} flash=${flash}/>`:modal.k==='adj'?html`<${Adj} a=${modal.a} run=${run}/>`:html`<${TxForm} t=${modal.t} acc=${selectable(modal.t)} cats=${cats} names=${names} run=${run} flash=${flash}/>`}<//>`}
+  </div>`;
+}
+
+function App(){
+  const[s,setS]=useState(undefined);
+  useEffect(()=>{sb.auth.getSession().then(({data})=>setS(data.session));
+    const{data:l}=sb.auth.onAuthStateChange((_e,x)=>setS(x));return()=>l.subscription.unsubscribe()},[]);
+  if(s===undefined)return html`<div className="p-8 text-stone-500">Memuat…</div>`;
+  return s?html`<${Main}/>`:html`<${Login}/>`;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
+</script>
+</body>
+</html>
