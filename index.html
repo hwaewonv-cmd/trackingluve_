@@ -142,15 +142,21 @@ function Line({pts}){
   return html`<svg viewBox="0 0 300 100" preserveAspectRatio="none" className="w-full h-28 text-emerald-700 dark:text-emerald-400"><polygon points=${'0,100 '+d+' 300,100'} fill="currentColor" opacity="0.1"/><polyline points=${d} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke"/></svg>`;
 }
 
+function Bars({b}){
+  const hi=Math.max(1,...b.flatMap(x=>[x.inc,x.exp])),w=300/b.length;
+  return html`<svg viewBox="0 0 300 100" className="w-full h-28">${b.map((x,i)=>html`<g key=${i}><rect x=${i*w+w*0.1} width=${w*0.38} y=${100-x.inc/hi*95} height=${x.inc/hi*95} fill="#0f6b4f"/><rect x=${i*w+w*0.5} width=${w*0.38} y=${100-x.exp/hi*95} height=${x.exp/hi*95} fill="#c2410c"/></g>`)}</svg>`;
+}
+const WD=['Sen','Sel','Rab','Kam','Jum','Sab','Min'],MN='JFMAMJJASOND'.split('');
+
 function Main(){
   const[acc,setAcc]=useState([]),[cats,setCats]=useState([]),[tx,setTx]=useState([]);
-  const[tab,setTab]=useState('home'),[mo,setMo]=useState(0),[fa,setFa]=useState(''),[modal,setModal]=useState(null),[msg,setMsg]=useState(''),[ld,setLd]=useState(true);
+  const[tab,setTab]=useState('home'),[mo,setMo]=useState(0),[per,setPer]=useState('m'),[ro,setRo]=useState(0),[ra,setRa]=useState(''),[q,setQ]=useState(''),[d1,setD1]=useState(''),[d2,setD2]=useState(''),[fa,setFa]=useState(''),[modal,setModal]=useState(null),[msg,setMsg]=useState(''),[ld,setLd]=useState(true);
   const flash=t=>{setMsg(t);setTimeout(()=>setMsg(''),4500)};
   const load=useCallback(async()=>{
     const[a,c,t]=await Promise.all([
       sb.from('account_balances').select('*').order('sort_order').order('name'),
       sb.from('categories').select('*').order('name'),
-      sb.from('transactions').select('*').is('deleted_at',null).order('occurred_on',{ascending:false}).order('created_at',{ascending:false}).limit(500)]);
+      sb.from('transactions').select('*').is('deleted_at',null).order('occurred_on',{ascending:false}).order('created_at',{ascending:false}).limit(1000)]);
     const er=a.error||c.error||t.error;
     if(er)flash('Gagal memuat data: '+er.message);
     else{setAcc(a.data);setCats(c.data);setTx(t.data)}
@@ -176,7 +182,8 @@ function Main(){
       ${!a.is_archived&&html`<button className=${sec+' !py-1.5 !px-3'} onClick=${()=>setModal({k:'adj',a})}>Sesuaikan saldo</button>`}
       <button className=${sec+' !py-1.5 !px-3'} onClick=${()=>setModal({k:'acc',a})}>Edit</button></div></div>`;
 
-  const list=fa?tx.filter(t=>t.account_id===fa||t.to_account_id===fa):tx;
+  const qq=q.trim().toLowerCase();
+  const list=tx.filter(t=>(!fa||t.account_id===fa||t.to_account_id===fa)&&(!d1||t.occurred_on>=d1)&&(!d2||t.occurred_on<=d2)&&(!qq||[t.note,names[t.category_id],names[t.account_id],names[t.to_account_id],t.amount].some(x=>x!=null&&String(x).toLowerCase().includes(qq))));
   const groups=[];list.forEach(t=>{const g=groups[groups.length-1];g&&g.d===t.occurred_on?g.l.push(t):groups.push({d:t.occurred_on,l:[t]})});
   const txRow=t=>{
     const tr=t.type==='transfer',ad=t.type==='adjustment';
@@ -226,9 +233,50 @@ function Main(){
       ${tx.length===0?html`<div className=${card+' p-5 text-sm text-stone-500'}>Belum ada transaksi. Ketuk tombol + untuk mencatat yang pertama.</div>`:tx.slice(0,5).map(txRow)}</div>
   </div>`;
 
+  // ---- Laporan ----
+  const D=(y,m,d)=>new Date(y,m,d),n0=new Date(),fd=(d,o)=>d.toLocaleDateString('id-ID',o);
+  let s0,e0,lab,nb;
+  if(per==='d'){s0=D(n0.getFullYear(),n0.getMonth(),n0.getDate()+ro);e0=s0;lab=dlabel(iso(s0));nb=1}
+  else if(per==='w'){const dw=(n0.getDay()+6)%7;s0=D(n0.getFullYear(),n0.getMonth(),n0.getDate()-dw+ro*7);e0=D(s0.getFullYear(),s0.getMonth(),s0.getDate()+6);lab=fd(s0,{day:'numeric',month:'short'})+' – '+fd(e0,{day:'numeric',month:'short',year:'numeric'});nb=7}
+  else if(per==='m'){s0=D(n0.getFullYear(),n0.getMonth()+ro,1);e0=D(s0.getFullYear(),s0.getMonth()+1,0);lab=fd(s0,{month:'long',year:'numeric'});nb=e0.getDate()}
+  else{s0=D(n0.getFullYear()+ro,0,1);e0=D(s0.getFullYear(),11,31);lab=String(s0.getFullYear());nb=12}
+  const rs=iso(s0),re=iso(e0);
+  const bix=ds=>per==='y'?+ds.slice(5,7)-1:per==='d'?0:Math.round((D(+ds.slice(0,4),+ds.slice(5,7)-1,+ds.slice(8,10))-s0)/864e5);
+  const bk=Array.from({length:nb},()=>({inc:0,exp:0})),cat={};let rinc=0,rexp=0;
+  tx.forEach(t=>{if(t.occurred_on<rs||t.occurred_on>re||(ra&&t.account_id!==ra&&t.to_account_id!==ra))return;const b=bk[bix(t.occurred_on)],x=t.amount;
+    if(t.type==='income'){rinc+=x;b.inc+=x}
+    else if(t.type==='expense'){rexp+=x;b.exp+=x;const k=names[t.category_id]||'Lainnya';cat[k]=(cat[k]||0)+x}
+    else if(t.type==='transfer'&&t.fee>0&&(!ra||t.account_id===ra)){rexp+=t.fee;b.exp+=t.fee;cat['Biaya Admin']=(cat['Biaya Admin']||0)+t.fee}});
+  const rset=ra?[ra]:active.map(a=>a.id);
+  const effR=t=>{const x=t.amount,h=id=>rset.includes(id);if(t.type==='transfer')return(h(t.account_id)?-(x+t.fee):0)+(h(t.to_account_id)?x:0);if(!h(t.account_id))return 0;return t.type==='expense'?-x:x};
+  const cur=ra?(acc.find(a=>a.id===ra)?.balance||0):total;
+  const atR=d=>cur-tx.filter(t=>t.occurred_on>d).reduce((z,t)=>z+effR(t),0);
+  const td=today();
+  const dts=per==='d'?[]:Array.from({length:nb},(_,i)=>per==='y'?iso(D(s0.getFullYear(),i+1,0)):iso(D(s0.getFullYear(),s0.getMonth(),s0.getDate()+i)));
+  const apts=[...new Set(dts.map(d=>d>td?td:d))].map(atR);
+  const cl=Object.entries(cat).sort((a,b)=>b[1]-a[1]);
+  const rep=html`<div className="space-y-4">
+    <div className="pt-2"><h1 className="text-2xl font-bold">Laporan</h1></div>
+    <div className="grid grid-cols-4 gap-1 rounded-xl bg-stone-200/70 dark:bg-zinc-800 p-1">${[['d','Harian'],['w','Mingguan'],['m','Bulanan'],['y','Tahunan']].map(([k,l])=>html`<button key=${k} onClick=${()=>{setPer(k);setRo(0)}} className=${'rounded-lg py-2 text-xs font-semibold '+(per===k?'bg-white dark:bg-zinc-950 shadow-sm':'text-stone-500')}>${l}</button>`)}</div>
+    <div className="flex items-center justify-between"><button className="px-3 py-1 text-stone-500" aria-label="Sebelumnya" onClick=${()=>setRo(ro-1)}>◀</button><div className="text-center font-semibold">${lab}</div><button className="px-3 py-1 text-stone-500 disabled:opacity-30" aria-label="Berikutnya" disabled=${ro>=0} onClick=${()=>setRo(ro+1)}>▶</button></div>
+    <select className=${inp} value=${ra} onChange=${e=>setRa(e.target.value)}><option value="">Semua akun</option>${acc.map(a=>html`<option key=${a.id} value=${a.id}>${a.name}</option>`)}</select>
+    <div className=${card+' p-4 grid grid-cols-3 gap-2'}>
+      <div><div className="text-xs text-stone-500">Pemasukan</div><div className="font-semibold text-sm tabular-nums text-emerald-700 dark:text-emerald-400">${rp(rinc)}</div></div>
+      <div><div className="text-xs text-stone-500">Pengeluaran</div><div className="font-semibold text-sm tabular-nums text-red-600 dark:text-red-400">${rp(rexp)}</div></div>
+      <div><div className="text-xs text-stone-500">Selisih</div><div className=${'font-semibold text-sm tabular-nums '+(rinc-rexp<0?'text-red-600':'')}>${rp(rinc-rexp)}</div></div></div>
+    ${per!=='d'&&html`<div className=${card+' p-4'}><div className="font-semibold mb-2">Pemasukan dan pengeluaran</div><${Bars} b=${bk}/>
+      <div className="flex justify-around text-[10px] text-stone-500">${per==='w'?WD.map(x=>html`<span key=${x}>${x}</span>`):per==='y'?MN.map((x,i)=>html`<span key=${i}>${x}</span>`):html`<span>1</span><span>${nb}</span>`}</div>
+      <div className="mt-2 flex gap-4 text-xs text-stone-500"><span><span className="inline-block h-2 w-2 rounded-full bg-emerald-800 mr-1"></span>Masuk</span><span><span className="inline-block h-2 w-2 rounded-full bg-orange-700 mr-1"></span>Keluar</span></div></div>`}
+    <div className=${card+' p-4 space-y-3'}><div className="font-semibold">Pengeluaran per kategori</div>
+      ${cl.length===0?html`<p className="text-sm text-stone-500">Belum ada pengeluaran pada periode ini.</p>`:cl.map(([k,v],i)=>html`<div key=${k}><div className="flex justify-between text-sm"><span className="truncate">${k}</span><span className="tabular-nums text-stone-500">${rp(v)} · ${Math.round(v/rexp*100)}%</span></div><div className="mt-1 h-1.5 rounded-full bg-stone-200 dark:bg-zinc-800"><div className="h-1.5 rounded-full" style=${{width:(v/rexp*100)+'%',background:PAL[i%PAL.length]}}></div></div></div>`)}</div>
+    ${apts.length>1&&html`<div className=${card+' p-4'}><div className="font-semibold mb-2">Riwayat total aset${ra?' (akun ini)':''}</div><${Line} pts=${apts}/><div className="flex justify-between text-xs text-stone-500 tabular-nums"><span>${rp(apts[0])}</span><span>${rp(apts[apts.length-1])}</span></div></div>`}
+    <button className=${sec+' w-full'} onClick=${()=>{setFa(ra);setD1(rs);setD2(re);setQ('');setTab('tx')}}>Lihat transaksi periode ini</button>
+    ${tx.length>=1000&&html`<p className="text-xs text-stone-500">Hanya 1000 transaksi terbaru yang dimuat, jadi periode lama bisa kurang akurat.</p>`}
+  </div>`;
+
   return html`<div className="max-w-md mx-auto min-h-screen px-4 pb-32" style=${{paddingTop:'calc(1rem + env(safe-area-inset-top))'}}>
     ${msg&&html`<div className="fixed top-3 inset-x-4 z-50 mx-auto max-w-md rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 px-4 py-3 text-sm shadow-lg">${msg}</div>`}
-    ${ld?html`<p className="py-20 text-center text-stone-500">Memuat…</p>`:tab==='home'?home:tab==='acc'?html`<div className="space-y-4">
+    ${ld?html`<p className="py-20 text-center text-stone-500">Memuat…</p>`:tab==='home'?home:tab==='rep'?rep:tab==='acc'?html`<div className="space-y-4">
       <div className="flex items-start justify-between pt-2"><div><div className="text-sm text-stone-500">Total aset</div><div className=${'text-4xl font-bold tracking-tight tabular-nums '+(total<0?'text-red-600':'')}>${rp(total)}</div><div className="text-xs text-stone-500 mt-1">${active.length} akun aktif</div></div>
         <button className="text-sm text-stone-500 underline" onClick=${()=>sb.auth.signOut()}>Keluar</button></div>
       ${active.length===0&&html`<div className=${card+' p-5 text-sm text-stone-500'}>Belum ada akun. Tambahkan akun pertama Anda, mis. Bank Jago, DANA, atau Uang tunai.</div>`}
@@ -237,10 +285,13 @@ function Main(){
       ${archived.length>0&&html`<details className="text-sm"><summary className="cursor-pointer text-stone-500">Diarsipkan (${archived.length})</summary><div className="mt-3 space-y-3">${archived.map(accRow)}</div></details>`}
     </div>`:html`<div className="space-y-4">
       <div className="pt-2"><h1 className="text-2xl font-bold">Transaksi</h1></div>
+      <input type="search" className=${inp} placeholder="Cari catatan, kategori, akun, atau nominal" value=${q} onChange=${e=>setQ(e.target.value)}/>
+      <div className="grid grid-cols-2 gap-2"><${Field} label="Dari tanggal"><input type="date" className=${inp} value=${d1} onChange=${e=>setD1(e.target.value)}/><//><${Field} label="Sampai tanggal"><input type="date" className=${inp} value=${d2} onChange=${e=>setD2(e.target.value)}/><//></div>
+      ${(q||d1||d2||fa)&&html`<button className="text-sm text-stone-500 underline" onClick=${()=>{setQ('');setD1('');setD2('');setFa('')}}>Hapus semua filter (${list.length} hasil)</button>`}
       <select className=${inp} value=${fa} onChange=${e=>setFa(e.target.value)}><option value="">Semua akun</option>${acc.map(a=>html`<option key=${a.id} value=${a.id}>${a.name}</option>`)}</select>
       ${groups.length===0&&html`<div className=${card+' p-5 text-sm text-stone-500'}>Belum ada transaksi. Ketuk tombol + di bawah untuk mencatat yang pertama.</div>`}
       ${groups.map(g=>html`<div key=${g.d} className="space-y-2"><div className="text-xs font-semibold text-stone-500 pt-2">${dlabel(g.d)}</div>${g.l.map(txRow)}</div>`)}
-      ${tx.length>=500&&html`<p className="text-xs text-stone-500">Menampilkan 500 transaksi terbaru.</p>`}
+      ${tx.length>=1000&&html`<p className="text-xs text-stone-500">Menampilkan 1000 transaksi terbaru.</p>`}
     </div>`}
     <nav className="fixed bottom-0 inset-x-0 z-30 border-t border-stone-200 dark:border-zinc-800 bg-stone-50/90 dark:bg-zinc-950/90 backdrop-blur" style=${{paddingBottom:'env(safe-area-inset-bottom)'}}>
       <div className="mx-auto max-w-md flex items-center justify-around py-2">
@@ -248,6 +299,7 @@ function Main(){
         <button onClick=${()=>setTab('acc')} className=${'px-3 py-2 text-sm font-semibold '+(tab==='acc'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Akun</button>
         <button onClick=${()=>openTx(null)} aria-label="Tambah transaksi" className="mx-auto h-14 w-14 -mt-6 rounded-full bg-emerald-800 text-white text-3xl shadow-lg">+</button>
         <button onClick=${()=>setTab('tx')} className=${'py-2 text-sm font-semibold '+(tab==='tx'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Transaksi</button>
+        <button onClick=${()=>setTab('rep')} className=${'px-2 py-2 text-sm font-semibold '+(tab==='rep'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Laporan</button>
       </div></nav>
     ${modal&&html`<${Sheet} title=${modal.k==='acc'?(modal.a?'Edit akun':'Akun baru'):modal.k==='adj'?'Sesuaikan saldo':(modal.t?'Detail transaksi':'Transaksi baru')} onClose=${()=>setModal(null)}>
       ${modal.k==='acc'?html`<${AccForm} a=${modal.a} run=${run} flash=${flash}/>`:modal.k==='adj'?html`<${Adj} a=${modal.a} run=${run}/>`:html`<${TxForm} t=${modal.t} acc=${selectable(modal.t)} cats=${cats} names=${names} run=${run} flash=${flash}/>`}<//>`}
