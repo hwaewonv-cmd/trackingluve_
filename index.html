@@ -5,10 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0f6b4f">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Keuangan">
 <title>Personal Finance Tracker</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap">
 <script src="https://cdn.tailwindcss.com/3.4.17"></script>
-<script>tailwind.config={theme:{extend:{fontFamily:{sans:['"Plus Jakarta Sans"','system-ui','sans-serif']}}}}</script>
+<script>tailwind.config={darkMode:'class',theme:{extend:{fontFamily:{sans:['"Plus Jakarta Sans"','system-ui','sans-serif']}}}};
+const LS={get:k=>{try{return localStorage.getItem(k)}catch(e){return null}},set:(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}},del:k=>{try{localStorage.removeItem(k)}catch(e){}}};
+const applyTheme=()=>{const t=LS.get('pft_theme')||'system';document.documentElement.classList.toggle('dark',t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme: dark)').matches))};
+applyTheme();try{matchMedia('(prefers-color-scheme: dark)').addEventListener('change',applyTheme)}catch(e){}</script>
 <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
@@ -162,6 +170,41 @@ const pdate=v=>{v=String(v||'').trim();let y,m,d,x;
 const pamt=v=>{let t=String(v??'').replace(/rp/i,'').replace(/\s/g,'').replace(/,\d{1,2}$/,'');const neg=t.startsWith('-');t=t.replace(/\D/g,'');return t?(neg?-1:1)*Number(t):0};
 const fetchAll=async(tbl,f)=>{let o=[],i=0;for(;;){let q=sb.from(tbl).select('*');if(f)q=f(q);const{data,error}=await q.order('id').range(i,i+999);if(error)throw error;o=o.concat(data);if(data.length<1000)break;i+=1000}return o};
 
+const sha=async s=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+function Lock({onOk,onForgot}){
+  const[p,setP]=useState(''),[err,setErr]=useState(''),[fail,setFail]=useState(0),[until,setUntil]=useState(0);
+  const press=async d=>{if(Date.now()<until)return;const v=(p+d).slice(0,6);setP(v);setErr('');
+    if(v.length<6)return;
+    const[salt,h]=(LS.get('pft_pin')||':').split(':');
+    if(await sha(salt+v)===h)return onOk();
+    const f=fail+1;setP('');setFail(f);
+    if(f>=5){setUntil(Date.now()+30000);setFail(0);setErr('Terlalu banyak percobaan. Tunggu 30 detik.')}else setErr('PIN salah')};
+  return html`<div className="min-h-screen flex items-center justify-center p-6"><div className="w-full max-w-xs text-center space-y-6">
+    <div><h1 className="text-xl font-bold">Masukkan PIN</h1><p className="h-5 text-sm text-red-600">${err}</p></div>
+    <div className="flex justify-center gap-3">${[0,1,2,3,4,5].map(i=>html`<span key=${i} className=${'h-3 w-3 rounded-full '+(i<p.length?'bg-emerald-800':'bg-stone-300 dark:bg-zinc-700')}></span>`)}</div>
+    <div className="grid grid-cols-3 gap-3">${['1','2','3','4','5','6','7','8','9','','0','⌫'].map((k,i)=>k===''?html`<span key=${i}></span>`:html`<button key=${i} onClick=${()=>k==='⌫'?setP(p.slice(0,-1)):press(k)} className=${card+' py-4 text-xl font-semibold'}>${k}</button>`)}</div>
+    <button className="text-sm text-stone-500 underline" onClick=${onForgot}>Lupa PIN? Keluar dan masuk lagi</button></div></div>`;
+}
+function Settings({flash}){
+  const[t,setT]=useState(LS.get('pft_theme')||'system'),[pin,setPin]=useState(!!LS.get('pft_pin')),[p1,setP1]=useState(''),[p2,setP2]=useState(''),[pw,setPw]=useState('');
+  const theme=k=>{setT(k);LS.set('pft_theme',k);applyTheme()};
+  const savePin=async()=>{if(!/^\d{6}$/.test(p1))return flash('PIN harus 6 angka');if(p1!==p2)return flash('Konfirmasi PIN tidak sama');
+    const salt=crypto.randomUUID();LS.set('pft_pin',salt+':'+await sha(salt+p1));setPin(true);setP1('');setP2('');flash('PIN diaktifkan')};
+  const chg=async()=>{if(pw.length<12)return flash('Kata sandi minimal 12 karakter');const{error}=await sb.auth.updateUser({password:pw});flash(error?error.message:'Kata sandi diganti');if(!error)setPw('')};
+  return html`<div className="space-y-6">
+    <section className="space-y-2"><h3 className="font-semibold">Tema</h3><div className="grid grid-cols-3 gap-1 rounded-xl bg-stone-200/70 dark:bg-zinc-800 p-1">${[['system','Sistem'],['light','Terang'],['dark','Gelap']].map(([k,l])=>html`<button key=${k} onClick=${()=>theme(k)} className=${'rounded-lg py-2 text-sm font-semibold '+(t===k?'bg-white dark:bg-zinc-950 shadow-sm':'text-stone-500')}>${l}</button>`)}</div></section>
+    <section className="space-y-3"><h3 className="font-semibold">Kunci PIN</h3>
+      ${pin?html`<div className="space-y-3"><p className="text-sm text-stone-500">PIN aktif. Aplikasi terkunci saat dibuka dan setelah ditinggalkan lebih dari 1 menit.</p><button className=${sec+' w-full'} onClick=${()=>{if(confirm('Nonaktifkan kunci PIN?')){LS.del('pft_pin');setPin(false)}}}>Nonaktifkan PIN</button></div>`
+      :html`<div className="space-y-3"><${Field} label="PIN baru (6 angka)"><input type="password" inputMode="numeric" maxLength="6" className=${inp} value=${p1} onChange=${e=>setP1(e.target.value.replace(/\D/g,''))}/><//>
+        <${Field} label="Ulangi PIN"><input type="password" inputMode="numeric" maxLength="6" className=${inp} value=${p2} onChange=${e=>setP2(e.target.value.replace(/\D/g,''))}/><//>
+        <button className=${pri} onClick=${savePin}>Aktifkan PIN</button></div>`}
+      <p className="text-xs text-stone-500">PIN hanya mengunci tampilan di perangkat ini agar orang yang meminjam tablet tidak langsung melihat data. Pengamanan utama tetap kata sandi login.</p></section>
+    <section className="space-y-3"><h3 className="font-semibold">Ganti kata sandi</h3>
+      <${Field} label="Kata sandi baru (minimal 12 karakter)"><input type="password" autoComplete="new-password" className=${inp} value=${pw} onChange=${e=>setPw(e.target.value)}/><//>
+      <button className=${sec+' w-full'} onClick=${chg}>Ganti kata sandi</button></section>
+    <button className=${sec+' w-full text-red-600'} onClick=${()=>sb.auth.signOut()}>Keluar</button>
+  </div>`;
+}
 function DataSheet({acc,cats,bud,goals,uid,run,flash,names,tx}){
   const[d1,setD1]=useState(''),[d2,setD2]=useState(''),[pv,setPv]=useState(null),[skip,setSkip]=useState(true),[busy,setBusy]=useState(false);
   const rows=()=>tx.filter(t=>(!d1||t.occurred_on>=d1)&&(!d2||t.occurred_on<=d2)).map(t=>({Tanggal:t.occurred_on,Jenis:TL[t.type],Akun:names[t.account_id]||'','Akun Tujuan':names[t.to_account_id]||'',Kategori:names[t.category_id]||'',Nominal:t.amount,'Biaya Admin':t.fee,Catatan:t.note||''}));
@@ -265,7 +308,7 @@ function Contrib({g,list,uid,run,flash}){
 
 function Main({uid}){
   const[acc,setAcc]=useState([]),[cats,setCats]=useState([]),[tx,setTx]=useState([]),[bud,setBud]=useState([]),[goals,setGoals]=useState([]),[ctb,setCtb]=useState([]);
-  const[tab,setTab]=useState('home'),[mo,setMo]=useState(0),[per,setPer]=useState('m'),[ro,setRo]=useState(0),[ra,setRa]=useState(''),[q,setQ]=useState(''),[d1,setD1]=useState(''),[d2,setD2]=useState(''),[fa,setFa]=useState(''),[modal,setModal]=useState(null),[msg,setMsg]=useState(''),[ld,setLd]=useState(true);
+  const[tab,setTab]=useState('home'),[mo,setMo]=useState(0),[off,setOff]=useState(false),[per,setPer]=useState('m'),[ro,setRo]=useState(0),[ra,setRa]=useState(''),[q,setQ]=useState(''),[d1,setD1]=useState(''),[d2,setD2]=useState(''),[fa,setFa]=useState(''),[modal,setModal]=useState(null),[msg,setMsg]=useState(''),[ld,setLd]=useState(true);
   const flash=t=>{setMsg(t);setTimeout(()=>setMsg(''),4500)};
   const load=useCallback(async()=>{
     const[a,c,t,bu,go,co]=await Promise.all([
@@ -274,10 +317,10 @@ function Main({uid}){
       sb.from('transactions').select('*').is('deleted_at',null).order('occurred_on',{ascending:false}).order('created_at',{ascending:false}).limit(1000),
       sb.from('budgets').select('*'),sb.from('savings_goals').select('*').order('created_at'),sb.from('goal_contributions').select('*').order('occurred_on',{ascending:false})]);
     const er=a.error||c.error||t.error||bu.error||go.error||co.error;
-    if(er)flash('Gagal memuat data: '+er.message);
-    else{setAcc(a.data);setCats(c.data);setTx(t.data);setBud(bu.data);setGoals(go.data);setCtb(co.data)}
+    if(er){let o=null;try{o=JSON.parse(LS.get('pft_snap'))}catch(e){}if(o){setAcc(o.a);setCats(o.c);setTx(o.t);setBud(o.bu);setGoals(o.go);setCtb(o.co);setOff(true);flash('Offline: menampilkan data terakhir, hanya baca')}else flash('Gagal memuat data: '+er.message)}
+    else{setAcc(a.data);setCats(c.data);setTx(t.data);setBud(bu.data);setGoals(go.data);setCtb(co.data);setOff(false);LS.set('pft_snap',JSON.stringify({a:a.data,c:c.data,t:t.data,bu:bu.data,go:go.data,co:co.data}))}
     setLd(false)},[]);
-  useEffect(()=>{load()},[load]);
+  useEffect(()=>{load();const f=()=>load();window.addEventListener('online',f);return()=>window.removeEventListener('online',f)},[load]);
   const run=async(p,ok)=>{
     const{error}=await p;
     if(error){flash(/foreign key/i.test(error.message)?'Akun sudah punya transaksi. Gunakan Arsipkan.':error.message);return false}
@@ -406,6 +449,7 @@ function Main({uid}){
 
   return html`<div className="max-w-md mx-auto min-h-screen px-4 pb-32" style=${{paddingTop:'calc(1rem + env(safe-area-inset-top))'}}>
     ${msg&&html`<div className="fixed top-3 inset-x-4 z-50 mx-auto max-w-md rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 px-4 py-3 text-sm shadow-lg">${msg}</div>`}
+    ${off&&html`<div className="mb-3 rounded-xl bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-200 px-3 py-2 text-xs">Mode offline: menampilkan data terakhir (hanya baca).</div>`}
     ${ld?html`<p className="py-20 text-center text-stone-500">Memuat…</p>`:tab==='home'?home:tab==='rep'?rep:tab==='acc'?html`<div className="space-y-4">
       <div className="flex items-start justify-between pt-2"><div><div className="text-sm text-stone-500">Total aset</div><div className=${'text-4xl font-bold tracking-tight tabular-nums '+(total<0?'text-red-600':'')}>${rp(total)}</div><div className="text-xs text-stone-500 mt-1">${active.length} akun aktif</div></div>
         <button className="text-sm text-stone-500 underline" onClick=${()=>sb.auth.signOut()}>Keluar</button></div>
@@ -413,6 +457,7 @@ function Main({uid}){
       <div className="space-y-3">${active.map(accRow)}</div>
       <button className=${sec+' w-full'} onClick=${()=>setModal({k:'acc',a:null})}>+ Tambah akun</button>
       <button className=${sec+' w-full'} onClick=${()=>setModal({k:'data'})}>Ekspor, impor & backup data</button>
+      <button className=${sec+' w-full'} onClick=${()=>setModal({k:'set'})}>Pengaturan: tema, PIN, kata sandi</button>
       ${archived.length>0&&html`<details className="text-sm"><summary className="cursor-pointer text-stone-500">Diarsipkan (${archived.length})</summary><div className="mt-3 space-y-3">${archived.map(accRow)}</div></details>`}
     </div>`:html`<div className="space-y-4">
       <div className="pt-2"><h1 className="text-2xl font-bold">Transaksi</h1></div>
@@ -432,18 +477,21 @@ function Main({uid}){
         <button onClick=${()=>setTab('tx')} className=${'py-2 text-sm font-semibold '+(tab==='tx'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Transaksi</button>
         <button onClick=${()=>setTab('rep')} className=${'px-2 py-2 text-sm font-semibold '+(tab==='rep'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Laporan</button>
       </div></nav>
-    ${modal&&html`<${Sheet} title=${modal.k==='data'?'Data & backup':modal.k==='bud'?'Anggaran bulan ini':modal.k==='goal'?(modal.g?'Edit target':'Target baru'):modal.k==='ctb'?modal.g.name:modal.k==='acc'?(modal.a?'Edit akun':'Akun baru'):modal.k==='adj'?'Sesuaikan saldo':(modal.t?'Detail transaksi':'Transaksi baru')} onClose=${()=>setModal(null)}>
-      ${modal.k==='data'?html`<${DataSheet} acc=${acc} cats=${cats} bud=${bud} goals=${goals} tx=${tx} uid=${uid} names=${names} run=${run} flash=${flash}/>`:modal.k==='bud'?html`<${BudgetForm} cats=${cats} budgets=${bud} bm=${bm} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='goal'?html`<${GoalForm} g=${modal.g} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='ctb'?html`<${Contrib} g=${modal.g} list=${gl(modal.g.id)} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='acc'?html`<${AccForm} a=${modal.a} run=${run} flash=${flash}/>`:modal.k==='adj'?html`<${Adj} a=${modal.a} run=${run}/>`:html`<${TxForm} t=${modal.t} acc=${selectable(modal.t)} cats=${cats} names=${names} run=${run} flash=${flash}/>`}<//>`}
+    ${modal&&html`<${Sheet} title=${modal.k==='set'?'Pengaturan':modal.k==='data'?'Data & backup':modal.k==='bud'?'Anggaran bulan ini':modal.k==='goal'?(modal.g?'Edit target':'Target baru'):modal.k==='ctb'?modal.g.name:modal.k==='acc'?(modal.a?'Edit akun':'Akun baru'):modal.k==='adj'?'Sesuaikan saldo':(modal.t?'Detail transaksi':'Transaksi baru')} onClose=${()=>setModal(null)}>
+      ${modal.k==='set'?html`<${Settings} flash=${flash}/>`:modal.k==='data'?html`<${DataSheet} acc=${acc} cats=${cats} bud=${bud} goals=${goals} tx=${tx} uid=${uid} names=${names} run=${run} flash=${flash}/>`:modal.k==='bud'?html`<${BudgetForm} cats=${cats} budgets=${bud} bm=${bm} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='goal'?html`<${GoalForm} g=${modal.g} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='ctb'?html`<${Contrib} g=${modal.g} list=${gl(modal.g.id)} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='acc'?html`<${AccForm} a=${modal.a} run=${run} flash=${flash}/>`:modal.k==='adj'?html`<${Adj} a=${modal.a} run=${run}/>`:html`<${TxForm} t=${modal.t} acc=${selectable(modal.t)} cats=${cats} names=${names} run=${run} flash=${flash}/>`}<//>`}
   </div>`;
 }
 
 function App(){
-  const[s,setS]=useState(undefined);
+  const[s,setS]=useState(undefined),[lk,setLk]=useState(!!LS.get('pft_pin'));
+  useEffect(()=>{let h=0;const f=()=>{if(document.hidden)h=Date.now();else if(LS.get('pft_pin')&&h&&Date.now()-h>60000)setLk(true)};document.addEventListener('visibilitychange',f);return()=>document.removeEventListener('visibilitychange',f)},[]);
   useEffect(()=>{sb.auth.getSession().then(({data})=>setS(data.session));
-    const{data:l}=sb.auth.onAuthStateChange((_e,x)=>setS(x));return()=>l.subscription.unsubscribe()},[]);
+    const{data:l}=sb.auth.onAuthStateChange((_e,x)=>{setS(x);if(!x)LS.del('pft_snap')});return()=>l.subscription.unsubscribe()},[]);
   if(s===undefined)return html`<div className="p-8 text-stone-500">Memuat…</div>`;
+  if(s&&lk&&LS.get('pft_pin'))return html`<${Lock} onOk=${()=>setLk(false)} onForgot=${()=>{sb.auth.signOut();LS.del('pft_pin');setLk(false)}}/>`;
   return s?html`<${Main} uid=${s.user.id}/>`:html`<${Login}/>`;
 }
+if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
 </script>
 </body>
