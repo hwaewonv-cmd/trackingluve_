@@ -148,18 +148,59 @@ function Bars({b}){
 }
 const WD=['Sen','Sel','Rab','Kam','Jum','Sab','Min'],MN='JFMAMJJASOND'.split('');
 
-function Main(){
-  const[acc,setAcc]=useState([]),[cats,setCats]=useState([]),[tx,setTx]=useState([]);
+function BudgetForm({cats,budgets,bm,uid,run,flash}){
+  const ex=cats.filter(c=>c.kind==='expense'&&!c.is_archived&&!c.is_system);
+  const[v,setV]=useState(()=>Object.fromEntries(ex.map(c=>[c.id,String(budgets.find(b=>b.category_id===c.id&&b.month===bm)?.amount||'')])));
+  const[b,setB]=useState(false);
+  const save=async()=>{setB(true);
+    const rows=ex.filter(c=>num(v[c.id])>0).map(c=>({user_id:uid,category_id:c.id,month:bm,amount:num(v[c.id])}));
+    const zero=ex.filter(c=>!(num(v[c.id])>0)).map(c=>c.id);
+    if(zero.length){const{error}=await sb.from('budgets').delete().eq('month',bm).in('category_id',zero);if(error){setB(false);return flash(error.message)}}
+    await run(rows.length?sb.from('budgets').upsert(rows,{onConflict:'user_id,category_id,month'}):Promise.resolve({}),'Anggaran disimpan');setB(false)};
+  return html`<div className="space-y-4"><p className="text-sm text-stone-500">Batas pengeluaran per kategori untuk ${new Date(bm+'T00:00').toLocaleDateString('id-ID',{month:'long',year:'numeric'})}. Kosongkan untuk tanpa anggaran.</p>
+    ${ex.map(c=>html`<${Field} key=${c.id} label=${c.name}><input inputMode="numeric" className=${inp} placeholder="Tanpa anggaran" value=${fmtIn(v[c.id])} onChange=${e=>setV({...v,[c.id]:e.target.value})}/><//>`)}
+    <button className=${pri} disabled=${b} onClick=${save}>Simpan anggaran</button></div>`;
+}
+function GoalForm({g,uid,run,flash}){
+  const[n,setN]=useState(g?.name||''),[a,setA]=useState(g?String(g.target_amount):''),[d,setD]=useState(g?.target_date||'');
+  const save=()=>{if(!n.trim()||!num(a))return flash('Isi nama dan target nominal');
+    const row={name:n.trim(),target_amount:num(a),target_date:d||null};
+    return run(g?sb.from('savings_goals').update(row).eq('id',g.id):sb.from('savings_goals').insert({...row,user_id:uid}),'Target disimpan')};
+  return html`<div className="space-y-4">
+    <${Field} label="Nama target"><input className=${inp} value=${n} placeholder="mis. Dana darurat" onChange=${e=>setN(e.target.value)}/><//>
+    <${Field} label="Target nominal (Rp)"><input inputMode="numeric" className=${inp} value=${fmtIn(a)} onChange=${e=>setA(e.target.value)}/><//>
+    <${Field} label="Tenggat (opsional)"><input type="date" className=${inp} value=${d} onChange=${e=>setD(e.target.value)}/><//>
+    <button className=${pri} onClick=${save}>Simpan target</button>
+    ${g&&html`<button className=${sec+' w-full text-red-600'} onClick=${()=>{if(confirm('Hapus target ini beserta seluruh setorannya?'))run(sb.from('savings_goals').delete().eq('id',g.id),'Target dihapus')}}>Hapus target</button>`}</div>`;
+}
+function Contrib({g,list,uid,run,flash}){
+  const saved=list.reduce((z,c)=>z+c.amount,0);
+  const[a,setA]=useState(''),[m,setM]=useState('in'),[d,setD]=useState(today()),[nt,setNt]=useState('');
+  const save=()=>{const x=num(a);if(!x)return flash('Nominal harus lebih dari 0');if(m==='out'&&x>saved)return flash('Penarikan melebihi dana yang terkumpul');
+    return run(sb.from('goal_contributions').insert({goal_id:g.id,user_id:uid,amount:m==='out'?-x:x,occurred_on:d,note:nt||null}),m==='in'?'Setoran dicatat':'Penarikan dicatat')};
+  return html`<div className="space-y-4">
+    <p className="text-sm text-stone-500">Terkumpul <b className="text-stone-900 dark:text-stone-100">${rp(saved)}</b> dari ${rp(g.target_amount)}. Setoran hanya penanda alokasi: uangnya tetap di akun Anda dan saldo akun tidak berubah.</p>
+    <div className="grid grid-cols-2 gap-1 rounded-xl bg-stone-200/70 dark:bg-zinc-800 p-1">${[['in','Setor'],['out','Tarik']].map(([k,l])=>html`<button key=${k} onClick=${()=>setM(k)} className=${'rounded-lg py-2 text-sm font-semibold '+(m===k?'bg-white dark:bg-zinc-950 shadow-sm':'text-stone-500')}>${l}</button>`)}</div>
+    <${Field} label="Nominal (Rp)"><input inputMode="numeric" className=${inp+' text-2xl font-semibold'} value=${fmtIn(a)} onChange=${e=>setA(e.target.value)}/><//>
+    <${Field} label="Tanggal"><input type="date" className=${inp} value=${d} onChange=${e=>setD(e.target.value)}/><//>
+    <${Field} label="Catatan (opsional)"><input className=${inp} value=${nt} onChange=${e=>setNt(e.target.value)}/><//>
+    <button className=${pri} onClick=${save}>Simpan</button>
+    ${list.length>0&&html`<ul className="space-y-2 text-sm">${list.map(c=>html`<li key=${c.id} className=${card+' p-3 flex items-center justify-between gap-2'}><div className="min-w-0"><div className=${'font-semibold tabular-nums '+(c.amount<0?'text-red-600':'text-emerald-700 dark:text-emerald-400')}>${(c.amount>0?'+':'')+rp(c.amount)}</div><div className="text-xs text-stone-500 truncate">${dlabel(c.occurred_on)}${c.note?' · '+c.note:''}</div></div><button className="px-2 text-stone-500" aria-label="Hapus" onClick=${()=>{if(confirm('Hapus catatan ini?'))run(sb.from('goal_contributions').delete().eq('id',c.id),'Dihapus')}}>✕</button></li>`)}</ul>`}</div>`;
+}
+
+function Main({uid}){
+  const[acc,setAcc]=useState([]),[cats,setCats]=useState([]),[tx,setTx]=useState([]),[bud,setBud]=useState([]),[goals,setGoals]=useState([]),[ctb,setCtb]=useState([]);
   const[tab,setTab]=useState('home'),[mo,setMo]=useState(0),[per,setPer]=useState('m'),[ro,setRo]=useState(0),[ra,setRa]=useState(''),[q,setQ]=useState(''),[d1,setD1]=useState(''),[d2,setD2]=useState(''),[fa,setFa]=useState(''),[modal,setModal]=useState(null),[msg,setMsg]=useState(''),[ld,setLd]=useState(true);
   const flash=t=>{setMsg(t);setTimeout(()=>setMsg(''),4500)};
   const load=useCallback(async()=>{
-    const[a,c,t]=await Promise.all([
+    const[a,c,t,bu,go,co]=await Promise.all([
       sb.from('account_balances').select('*').order('sort_order').order('name'),
       sb.from('categories').select('*').order('name'),
-      sb.from('transactions').select('*').is('deleted_at',null).order('occurred_on',{ascending:false}).order('created_at',{ascending:false}).limit(1000)]);
-    const er=a.error||c.error||t.error;
+      sb.from('transactions').select('*').is('deleted_at',null).order('occurred_on',{ascending:false}).order('created_at',{ascending:false}).limit(1000),
+      sb.from('budgets').select('*'),sb.from('savings_goals').select('*').order('created_at'),sb.from('goal_contributions').select('*').order('occurred_on',{ascending:false})]);
+    const er=a.error||c.error||t.error||bu.error||go.error||co.error;
     if(er)flash('Gagal memuat data: '+er.message);
-    else{setAcc(a.data);setCats(c.data);setTx(t.data)}
+    else{setAcc(a.data);setCats(c.data);setTx(t.data);setBud(bu.data);setGoals(go.data);setCtb(co.data)}
     setLd(false)},[]);
   useEffect(()=>{load()},[load]);
   const run=async(p,ok)=>{
@@ -211,6 +252,10 @@ function Main(){
   let inc=0,exp=0;
   tx.forEach(t=>{if(t.occurred_on.slice(0,7)!==key)return;if(t.type==='income')inc+=t.amount;else if(t.type==='expense')exp+=t.amount;else if(t.type==='transfer')exp+=t.fee});
   const pie=active.filter(a=>a.balance>0).map(a=>({id:a.id,name:a.name,v:a.balance})),psum=pie.reduce((s,x)=>s+x.v,0);
+  const bm=iso(new Date(now.getFullYear(),now.getMonth(),1)),cm=bm.slice(0,7),spent={};
+  tx.forEach(t=>{if(t.type==='expense'&&t.occurred_on.slice(0,7)===cm)spent[t.category_id]=(spent[t.category_id]||0)+t.amount});
+  const bl=bud.filter(b=>b.month===bm).map(b=>({...b,name:names[b.category_id]||'-',sp:spent[b.category_id]||0})).sort((a,b)=>b.sp/b.amount-a.sp/a.amount);
+  const gl=id=>ctb.filter(c=>c.goal_id===id);
   const home=html`<div className="space-y-4">
     <div className="pt-2"><div className="text-sm text-stone-500">Total aset</div>
       <div className=${'text-4xl font-bold tracking-tight tabular-nums '+(total<0?'text-red-600':'')}>${rp(total)}</div>
@@ -229,6 +274,16 @@ function Main(){
         <ul className="min-w-0 flex-1 space-y-1.5 text-sm">${pie.map((x,i)=>html`<li key=${x.id} className="flex items-center gap-2"><span className="h-2.5 w-2.5 shrink-0 rounded-full" style=${{background:PAL[i%PAL.length]}}/><span className="truncate flex-1">${x.name}</span><span className="tabular-nums text-stone-500">${Math.round(x.v/psum*100)}%</span></li>`)}</ul></div></div>`}
     ${active.length>0&&html`<div className=${card+' p-4'}><div className="font-semibold mb-2">Perkembangan aset, 30 hari</div><${Line} pts=${series}/>
       <div className="flex justify-between text-xs text-stone-500 tabular-nums"><span>${rp(series[0])}</span><span>${rp(series[29])}</span></div></div>`}
+    <div className=${card+' p-4 space-y-3'}><div className="flex items-center justify-between"><div className="font-semibold">Anggaran bulan ini</div><button className="text-sm text-stone-500 underline" onClick=${()=>setModal({k:'bud'})}>${bl.length?'Atur':'Buat anggaran'}</button></div>
+      ${bl.length===0?html`<p className="text-sm text-stone-500">Belum ada anggaran. Tetapkan batas per kategori agar pengeluaran terkontrol.</p>`:bl.map(b=>{const r=b.sp/b.amount;return html`<div key=${b.id}><div className="flex justify-between gap-2 text-sm"><span className="truncate">${b.name}</span><span className="tabular-nums text-stone-500 whitespace-nowrap">${rp(b.sp)} / ${rp(b.amount)}</span></div><div className="mt-1 h-1.5 rounded-full bg-stone-200 dark:bg-zinc-800"><div className="h-1.5 rounded-full" style=${{width:Math.min(100,r*100)+'%',background:r>=1?'#dc2626':r>=0.8?'#d97706':'#0f6b4f'}}></div></div><div className=${'text-xs mt-0.5 '+(r>=1?'text-red-600':'text-stone-500')}>${b.amount>=b.sp?'Sisa '+rp(b.amount-b.sp):'Melebihi '+rp(b.sp-b.amount)}</div></div>`})}</div>
+    <div className=${card+' p-4 space-y-4'}><div className="flex items-center justify-between"><div className="font-semibold">Target tabungan</div><button className="text-sm text-stone-500 underline" onClick=${()=>setModal({k:'goal',g:null})}>+ Target</button></div>
+      ${goals.length===0&&html`<p className="text-sm text-stone-500">Belum ada target. Buat target seperti dana darurat atau liburan.</p>`}
+      ${goals.map(g=>{const sv=gl(g.id).reduce((z,c)=>z+c.amount,0),r=Math.max(0,sv)/g.target_amount,rem=g.target_amount-sv;let est='';
+        if(g.target_date&&rem>0){const mm=(new Date(g.target_date+'T00:00')-now)/(30.44*864e5);est=mm<=0?'Tenggat sudah lewat':'Perlu sekitar '+rp(Math.ceil(rem/Math.max(1,Math.round(mm))))+' per bulan sampai '+dlabel(g.target_date)}
+        return html`<div key=${g.id} className="space-y-1"><div className="flex justify-between gap-2 text-sm"><button className="truncate text-left font-medium" onClick=${()=>setModal({k:'ctb',g})}>${g.name}</button><button className="text-xs text-stone-500 underline" onClick=${()=>setModal({k:'goal',g})}>Edit</button></div>
+          <div className="flex justify-between text-xs text-stone-500 tabular-nums"><span>${rp(sv)} / ${rp(g.target_amount)}</span><span>${Math.round(r*100)}%</span></div>
+          <div className="h-1.5 rounded-full bg-stone-200 dark:bg-zinc-800"><div className="h-1.5 rounded-full bg-emerald-800" style=${{width:Math.min(100,r*100)+'%'}}></div></div>
+          <div className="text-xs text-stone-500">${rem<=0?'Target tercapai':est||'Sisa '+rp(rem)}</div></div>`})}</div>
     <div className="space-y-2"><div className="flex items-center justify-between"><div className="font-semibold">Transaksi terbaru</div><button className="text-sm text-stone-500 underline" onClick=${()=>setTab('tx')}>Lihat semua</button></div>
       ${tx.length===0?html`<div className=${card+' p-5 text-sm text-stone-500'}>Belum ada transaksi. Ketuk tombol + untuk mencatat yang pertama.</div>`:tx.slice(0,5).map(txRow)}</div>
   </div>`;
@@ -301,8 +356,8 @@ function Main(){
         <button onClick=${()=>setTab('tx')} className=${'py-2 text-sm font-semibold '+(tab==='tx'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Transaksi</button>
         <button onClick=${()=>setTab('rep')} className=${'px-2 py-2 text-sm font-semibold '+(tab==='rep'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Laporan</button>
       </div></nav>
-    ${modal&&html`<${Sheet} title=${modal.k==='acc'?(modal.a?'Edit akun':'Akun baru'):modal.k==='adj'?'Sesuaikan saldo':(modal.t?'Detail transaksi':'Transaksi baru')} onClose=${()=>setModal(null)}>
-      ${modal.k==='acc'?html`<${AccForm} a=${modal.a} run=${run} flash=${flash}/>`:modal.k==='adj'?html`<${Adj} a=${modal.a} run=${run}/>`:html`<${TxForm} t=${modal.t} acc=${selectable(modal.t)} cats=${cats} names=${names} run=${run} flash=${flash}/>`}<//>`}
+    ${modal&&html`<${Sheet} title=${modal.k==='bud'?'Anggaran bulan ini':modal.k==='goal'?(modal.g?'Edit target':'Target baru'):modal.k==='ctb'?modal.g.name:modal.k==='acc'?(modal.a?'Edit akun':'Akun baru'):modal.k==='adj'?'Sesuaikan saldo':(modal.t?'Detail transaksi':'Transaksi baru')} onClose=${()=>setModal(null)}>
+      ${modal.k==='bud'?html`<${BudgetForm} cats=${cats} budgets=${bud} bm=${bm} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='goal'?html`<${GoalForm} g=${modal.g} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='ctb'?html`<${Contrib} g=${modal.g} list=${gl(modal.g.id)} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='acc'?html`<${AccForm} a=${modal.a} run=${run} flash=${flash}/>`:modal.k==='adj'?html`<${Adj} a=${modal.a} run=${run}/>`:html`<${TxForm} t=${modal.t} acc=${selectable(modal.t)} cats=${cats} names=${names} run=${run} flash=${flash}/>`}<//>`}
   </div>`;
 }
 
@@ -311,7 +366,7 @@ function App(){
   useEffect(()=>{sb.auth.getSession().then(({data})=>setS(data.session));
     const{data:l}=sb.auth.onAuthStateChange((_e,x)=>setS(x));return()=>l.subscription.unsubscribe()},[]);
   if(s===undefined)return html`<div className="p-8 text-stone-500">Memuat…</div>`;
-  return s?html`<${Main}/>`:html`<${Login}/>`;
+  return s?html`<${Main} uid=${s.user.id}/>`:html`<${Login}/>`;
 }
 ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
 </script>
