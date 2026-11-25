@@ -13,6 +13,8 @@
 <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 </head>
 <body class="bg-stone-50 text-stone-900 dark:bg-zinc-950 dark:text-stone-100 antialiased font-sans">
 <div id="root"></div>
@@ -148,6 +150,79 @@ function Bars({b}){
 }
 const WD=['Sen','Sel','Rab','Kam','Jum','Sab','Min'],MN='JFMAMJJASOND'.split('');
 
+const dl=(name,blob)=>{const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1e4)};
+const TL={income:'Pemasukan',expense:'Pengeluaran',transfer:'Transfer',adjustment:'Penyesuaian'};
+const TM={pemasukan:'income',masuk:'income',income:'income',pengeluaran:'expense',keluar:'expense',expense:'expense',transfer:'transfer',penyesuaian:'adjustment',adjustment:'adjustment'};
+const pdate=v=>{v=String(v||'').trim();let y,m,d,x;
+  if(x=v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)){y=x[1];m=x[2];d=x[3]}
+  else if(x=v.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/)){d=x[1];m=x[2];y=x[3]}
+  else return null;
+  const t=new Date(+y,m-1,+d);
+  return t.getFullYear()==y&&t.getMonth()==m-1&&t.getDate()==d?y+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0'):null};
+const pamt=v=>{let t=String(v??'').replace(/rp/i,'').replace(/\s/g,'').replace(/,\d{1,2}$/,'');const neg=t.startsWith('-');t=t.replace(/\D/g,'');return t?(neg?-1:1)*Number(t):0};
+const fetchAll=async(tbl,f)=>{let o=[],i=0;for(;;){let q=sb.from(tbl).select('*');if(f)q=f(q);const{data,error}=await q.order('id').range(i,i+999);if(error)throw error;o=o.concat(data);if(data.length<1000)break;i+=1000}return o};
+
+function DataSheet({acc,cats,bud,goals,uid,run,flash,names,tx}){
+  const[d1,setD1]=useState(''),[d2,setD2]=useState(''),[pv,setPv]=useState(null),[skip,setSkip]=useState(true),[busy,setBusy]=useState(false);
+  const rows=()=>tx.filter(t=>(!d1||t.occurred_on>=d1)&&(!d2||t.occurred_on<=d2)).map(t=>({Tanggal:t.occurred_on,Jenis:TL[t.type],Akun:names[t.account_id]||'','Akun Tujuan':names[t.to_account_id]||'',Kategori:names[t.category_id]||'',Nominal:t.amount,'Biaya Admin':t.fee,Catatan:t.note||''}));
+  const expCsv=()=>{const r=rows();if(!r.length)return flash('Tidak ada transaksi pada rentang ini');dl('transaksi-'+today()+'.csv',new Blob(['\ufeff'+Papa.unparse(r)],{type:'text/csv;charset=utf-8'}))};
+  const expXlsx=()=>{const r=rows();if(!r.length)return flash('Tidak ada transaksi pada rentang ini');
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(r),'Transaksi');
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(acc.map(a=>({Akun:a.name,Jenis:TYPES[a.type],'Saldo awal':a.opening_balance,'Saldo saat ini':a.balance,Diarsipkan:a.is_archived?'Ya':'Tidak'}))),'Akun');
+    XLSX.writeFile(wb,'keuangan-'+today()+'.xlsx')};
+  const strip=r=>{const{user_id,...x}=r;return x};
+  const backup=async()=>{setBusy(true);try{
+    const t=await fetchAll('transactions',q=>q.is('deleted_at',null)),c=await fetchAll('goal_contributions');
+    const j={app:'pft',version:1,exported_at:new Date().toISOString(),
+      accounts:acc.map(a=>({id:a.id,name:a.name,type:a.type,opening_balance:a.opening_balance,color:a.color,icon:a.icon,is_archived:a.is_archived,sort_order:a.sort_order})),
+      categories:cats.map(strip),transactions:t.map(strip),budgets:bud.map(strip),goals:goals.map(strip),contributions:c.map(strip)};
+    dl('backup-keuangan-'+today()+'.json',new Blob([JSON.stringify(j,null,1)],{type:'application/json'}));
+    flash('Backup diunduh: '+j.accounts.length+' akun, '+j.transactions.length+' transaksi')}catch(e){flash('Backup gagal: '+e.message)}setBusy(false)};
+  const restore=async f=>{try{
+    const j=JSON.parse(await f.text());if(j.app!=='pft'||!Array.isArray(j.transactions)||!Array.isArray(j.accounts))throw new Error('File ini bukan backup aplikasi ini');
+    if(!confirm('Pulihkan '+j.accounts.length+' akun dan '+j.transactions.length+' transaksi dari backup? Data dengan ID yang sama akan ditimpa. Data lain tidak dihapus.'))return;
+    setBusy(true);const U=r=>({...r,user_id:uid});
+    const steps=[['accounts',j.accounts,'id'],['categories',j.categories||[],'id'],['savings_goals',j.goals||[],'id'],['transactions',j.transactions.map(r=>({...r,deleted_at:null})),'id'],['budgets',j.budgets||[],'user_id,category_id,month'],['goal_contributions',j.contributions||[],'id']];
+    for(const[t,r,k]of steps)for(let i=0;i<r.length;i+=300){const{error}=await sb.from(t).upsert(r.slice(i,i+300).map(U),{onConflict:k});if(error)throw new Error(t+': '+error.message)}
+    await run(Promise.resolve({}),'Backup dipulihkan')}catch(e){flash('Gagal memulihkan: '+e.message)}setBusy(false)};
+  const readCsv=async f=>{
+    const r=Papa.parse(await f.text(),{header:true,skipEmptyLines:true,transformHeader:h=>h.trim().toLowerCase()});
+    if(!(r.meta.fields||[]).includes('tanggal'))return flash('Kolom "Tanggal" tidak ditemukan. Gunakan format yang sama dengan hasil ekspor CSV.');
+    const accBy={};acc.forEach(a=>accBy[a.name.trim().toLowerCase()]=a);
+    const catBy={};cats.forEach(c=>catBy[c.kind+'|'+c.name.trim().toLowerCase()]=c);
+    const key=(d,t,a,b,m,n)=>[d,t,a,b||'',Math.abs(m),n||''].join('|');
+    const exist=new Set(tx.map(t=>key(t.occurred_on,t.type,t.account_id,t.to_account_id,t.amount,t.note)));
+    setPv(r.data.map((x,i)=>{const e=[],g=k=>String(x[k]??'').trim();
+      const type=TM[g('jenis').toLowerCase()],date=pdate(g('tanggal')),a1=accBy[g('akun').toLowerCase()],a2=accBy[g('akun tujuan').toLowerCase()];
+      const amt=pamt(g('nominal')),fee=Math.abs(pamt(g('biaya admin')));
+      if(!type)e.push('jenis tidak dikenal');if(!date)e.push('tanggal tidak valid');if(!a1)e.push('akun "'+g('akun')+'" tidak ditemukan');
+      if(type==='transfer'&&(!a2||a2===a1))e.push('akun tujuan tidak valid');
+      if(type==='adjustment'?amt===0:amt<=0)e.push('nominal tidak valid');
+      let cat=null;if(type==='income'||type==='expense'){cat=catBy[type+'|'+g('kategori').toLowerCase()];if(!cat)e.push('kategori "'+g('kategori')+'" tidak ditemukan')}
+      const row=e.length?null:{user_id:uid,type,account_id:a1.id,to_account_id:type==='transfer'?a2.id:null,category_id:cat?cat.id:null,amount:amt,fee:type==='transfer'?fee:0,occurred_on:date,note:g('catatan')||null};
+      return{n:i+2,e,row,dup:!!row&&exist.has(key(row.occurred_on,row.type,row.account_id,row.to_account_id,row.amount,row.note))}}))};
+  const L=pv||[],ok=L.filter(x=>x.row),bad=L.filter(x=>!x.row),go=ok.filter(x=>!(skip&&x.dup));
+  const doImport=async()=>{setBusy(true);try{const r=go.map(x=>x.row);
+    for(let i=0;i<r.length;i+=500){const{error}=await sb.from('transactions').insert(r.slice(i,i+500));if(error)throw new Error(error.message)}
+    await run(Promise.resolve({}),r.length+' transaksi diimpor')}catch(e){flash('Impor gagal: '+e.message)}setBusy(false)};
+  return html`<div className="space-y-6">
+    <section className="space-y-3"><h3 className="font-semibold">Ekspor transaksi</h3>
+      <div className="grid grid-cols-2 gap-2"><${Field} label="Dari tanggal"><input type="date" className=${inp} value=${d1} onChange=${e=>setD1(e.target.value)}/><//><${Field} label="Sampai tanggal"><input type="date" className=${inp} value=${d2} onChange=${e=>setD2(e.target.value)}/><//></div>
+      <div className="flex gap-2"><button className=${sec+' flex-1'} onClick=${expCsv}>Unduh CSV</button><button className=${sec+' flex-1'} onClick=${expXlsx}>Unduh Excel</button></div>
+      <p className="text-xs text-stone-500">Kosongkan tanggal untuk mengekspor semuanya. Excel berisi lembar Transaksi dan Akun.</p></section>
+    <section className="space-y-3"><h3 className="font-semibold">Impor CSV</h3>
+      <p className="text-xs text-stone-500">Kolom: Tanggal, Jenis, Akun, Akun Tujuan, Kategori, Nominal, Biaya Admin, Catatan (sama seperti hasil ekspor). Akun dan kategori harus sudah ada. Anda bisa memeriksa dulu sebelum disimpan.</p>
+      <input type="file" accept=".csv,.txt,text/csv" className="text-sm" onChange=${e=>{const f=e.target.files[0];if(f)readCsv(f);e.target.value=''}}/>
+      ${pv&&html`<div className=${card+' p-3 text-sm space-y-2'}><div>${L.length} baris: <b>${ok.length}</b> valid, ${ok.filter(x=>x.dup).length} kemungkinan duplikat, ${bad.length} bermasalah</div>
+        ${bad.slice(0,6).map(x=>html`<div key=${x.n} className="text-xs text-red-600">Baris ${x.n}: ${x.e.join(', ')}</div>`)}${bad.length>6&&html`<div className="text-xs text-stone-500">dan ${bad.length-6} baris bermasalah lainnya</div>`}
+        <label className="flex items-center gap-2"><input type="checkbox" checked=${skip} onChange=${e=>setSkip(e.target.checked)}/>Lewati duplikat</label>
+        <button className=${pri} disabled=${busy||!go.length} onClick=${doImport}>Impor ${go.length} transaksi</button></div>`}</section>
+    <section className="space-y-3"><h3 className="font-semibold">Backup dan pemulihan</h3>
+      <button className=${sec+' w-full'} disabled=${busy} onClick=${backup}>Unduh backup lengkap (JSON)</button>
+      <div><span className="text-xs text-stone-500">Pulihkan dari file backup:</span><input type="file" accept=".json,application/json" className="mt-1 block text-sm" disabled=${busy} onChange=${e=>{const f=e.target.files[0];if(f)restore(f);e.target.value=''}}/></div>
+      <p className="text-xs text-stone-500">Backup berisi akun, kategori, transaksi, anggaran, dan target. Pemulihan menimpa data dengan ID yang sama dan tidak menghapus data lain. Simpan file backup di tempat aman karena isinya data keuangan Anda.</p></section>
+  </div>`;
+}
 function BudgetForm({cats,budgets,bm,uid,run,flash}){
   const ex=cats.filter(c=>c.kind==='expense'&&!c.is_archived&&!c.is_system);
   const[v,setV]=useState(()=>Object.fromEntries(ex.map(c=>[c.id,String(budgets.find(b=>b.category_id===c.id&&b.month===bm)?.amount||'')])));
@@ -337,6 +412,7 @@ function Main({uid}){
       ${active.length===0&&html`<div className=${card+' p-5 text-sm text-stone-500'}>Belum ada akun. Tambahkan akun pertama Anda, mis. Bank Jago, DANA, atau Uang tunai.</div>`}
       <div className="space-y-3">${active.map(accRow)}</div>
       <button className=${sec+' w-full'} onClick=${()=>setModal({k:'acc',a:null})}>+ Tambah akun</button>
+      <button className=${sec+' w-full'} onClick=${()=>setModal({k:'data'})}>Ekspor, impor & backup data</button>
       ${archived.length>0&&html`<details className="text-sm"><summary className="cursor-pointer text-stone-500">Diarsipkan (${archived.length})</summary><div className="mt-3 space-y-3">${archived.map(accRow)}</div></details>`}
     </div>`:html`<div className="space-y-4">
       <div className="pt-2"><h1 className="text-2xl font-bold">Transaksi</h1></div>
@@ -356,8 +432,8 @@ function Main({uid}){
         <button onClick=${()=>setTab('tx')} className=${'py-2 text-sm font-semibold '+(tab==='tx'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Transaksi</button>
         <button onClick=${()=>setTab('rep')} className=${'px-2 py-2 text-sm font-semibold '+(tab==='rep'?'text-emerald-800 dark:text-emerald-400':'text-stone-500')}>Laporan</button>
       </div></nav>
-    ${modal&&html`<${Sheet} title=${modal.k==='bud'?'Anggaran bulan ini':modal.k==='goal'?(modal.g?'Edit target':'Target baru'):modal.k==='ctb'?modal.g.name:modal.k==='acc'?(modal.a?'Edit akun':'Akun baru'):modal.k==='adj'?'Sesuaikan saldo':(modal.t?'Detail transaksi':'Transaksi baru')} onClose=${()=>setModal(null)}>
-      ${modal.k==='bud'?html`<${BudgetForm} cats=${cats} budgets=${bud} bm=${bm} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='goal'?html`<${GoalForm} g=${modal.g} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='ctb'?html`<${Contrib} g=${modal.g} list=${gl(modal.g.id)} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='acc'?html`<${AccForm} a=${modal.a} run=${run} flash=${flash}/>`:modal.k==='adj'?html`<${Adj} a=${modal.a} run=${run}/>`:html`<${TxForm} t=${modal.t} acc=${selectable(modal.t)} cats=${cats} names=${names} run=${run} flash=${flash}/>`}<//>`}
+    ${modal&&html`<${Sheet} title=${modal.k==='data'?'Data & backup':modal.k==='bud'?'Anggaran bulan ini':modal.k==='goal'?(modal.g?'Edit target':'Target baru'):modal.k==='ctb'?modal.g.name:modal.k==='acc'?(modal.a?'Edit akun':'Akun baru'):modal.k==='adj'?'Sesuaikan saldo':(modal.t?'Detail transaksi':'Transaksi baru')} onClose=${()=>setModal(null)}>
+      ${modal.k==='data'?html`<${DataSheet} acc=${acc} cats=${cats} bud=${bud} goals=${goals} tx=${tx} uid=${uid} names=${names} run=${run} flash=${flash}/>`:modal.k==='bud'?html`<${BudgetForm} cats=${cats} budgets=${bud} bm=${bm} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='goal'?html`<${GoalForm} g=${modal.g} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='ctb'?html`<${Contrib} g=${modal.g} list=${gl(modal.g.id)} uid=${uid} run=${run} flash=${flash}/>`:modal.k==='acc'?html`<${AccForm} a=${modal.a} run=${run} flash=${flash}/>`:modal.k==='adj'?html`<${Adj} a=${modal.a} run=${run}/>`:html`<${TxForm} t=${modal.t} acc=${selectable(modal.t)} cats=${cats} names=${names} run=${run} flash=${flash}/>`}<//>`}
   </div>`;
 }
 
